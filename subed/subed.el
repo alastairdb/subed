@@ -39,6 +39,9 @@
 (require 'subed-vtt)
 (require 'subed-mpv)
 
+(eval-when-compile
+  (require 'cl-macs))
+
 (setq subed-mode-map
   (let ((subed-mode-map (make-keymap)))
     (define-key subed-mode-map (kbd "M-n") #'subed-forward-subtitle-text)

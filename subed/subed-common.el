@@ -31,6 +31,8 @@
 (require 'subed-debug)
 (require 'subed-mpv)
 
+(eval-when-compile
+  (require 'cl-macs))
 
 ;;; Utilities
 
