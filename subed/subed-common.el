@@ -27,6 +27,7 @@
 
 ;;; Code:
 
+(require 'cl-macs)
 (require 'subed-config)
 (require 'subed-debug)
 (require 'subed-mpv)
@@ -341,6 +342,88 @@ but we move the start time first."
       (cl-flet ((move-subtitle (subed--get-move-subtitle-func msecs)))
         (move-subtitle msecs)))))
 
+(defun subed--scale-subtitles-in-region (msecs beg end)
+  "Scale subtitles in region specified by BEG and END after moving END MSECS milliseconds."
+  (let* ((beg-point (save-excursion ; normalized to fixed location over BEG
+                      (goto-char beg)
+                      (subed-jump-to-subtitle-end)
+                      (point)))
+         (beg-next-point (save-excursion
+                           (goto-char beg-point)
+                           (subed-forward-subtitle-end)
+                           (point)))
+         (end-point (save-excursion ; normalized to fixed location over END
+                      (goto-char end)
+                      (subed-jump-to-subtitle-end)
+                      (point)))
+         (end-prev-point (save-excursion
+                           (goto-char end-point)
+                           (subed-backward-subtitle-end)
+                           (point)))
+         (beg-start-msecs (save-excursion
+                            (goto-char beg-point)
+                            (subed-subtitle-msecs-start)))
+         (old-end-start-msecs (save-excursion
+                                (goto-char end-point)
+                                (subed-subtitle-msecs-start))))
+    ;; check for improper range (BEG after END)
+    (unless (<= beg end)
+      (user-error "Can't scale with improper range"))
+    ;; check for 0 or 1 subtitle scenario
+    (unless (/= beg-point end-point)
+      (user-error "Can't scale with fewer than 3 subtitles"))
+    ;; check for 2 subtitle scenario
+    (unless (/= beg-point end-prev-point)
+      (user-error "Can't scale with only 2 subtitles"))
+    ;; check for missing timestamps
+    (unless beg-start-msecs
+      (user-error "Can't scale when first subtitle timestamp missing"))
+    (unless old-end-start-msecs
+      (user-error "Can't scale when last subtitle timestamp missing"))
+    ;; check for range with 0 time interval
+    (unless (/= beg-start-msecs old-end-start-msecs)
+      (user-error "Can't scale subtitle range with 0 time interval"))
+
+    (unless (= msecs 0)
+      (subed-with-subtitle-replay-disabled
+        (cl-flet ((move-subtitle (subed--get-move-subtitle-func msecs)))
+          (let* ((new-end-start-msecs (+ old-end-start-msecs msecs))
+                 (scale-factor (/ (float (- new-end-start-msecs beg-start-msecs))
+                                  (float (- old-end-start-msecs beg-start-msecs))))
+                 (scale-subtitles
+                  (lambda (&optional reverse)
+                    (subed-for-each-subtitle beg-next-point end-prev-point reverse
+                      (let ((old-start-msecs (subed-subtitle-msecs-start)))
+                        (unless old-start-msecs
+                          (user-error "Can't scale when subtitle timestamp missing"))
+                        (let* ((new-start-msecs
+                                (+ beg-start-msecs
+                                   (round (* (- old-start-msecs beg-start-msecs) scale-factor))))
+                               (delta-msecs (- new-start-msecs old-start-msecs)))
+                          (unless (and (<= beg-start-msecs old-start-msecs)
+                                       (>= old-end-start-msecs old-start-msecs))
+                            (user-error "Can't scale when nonchronological subtitles exist"))
+                          (move-subtitle delta-msecs :ignore-negative-duration)))))))
+            (atomic-change-group
+              (if (> msecs 0)
+                  (save-excursion
+                    ;; Moving forward - Start on last subtitle to see if we
+                    ;; can move forward.
+                    (goto-char end)
+                    (let ((adjusted-msecs (move-subtitle msecs)))
+                      (unless (and adjusted-msecs
+                                   (= msecs adjusted-msecs))
+                        (user-error "Can't scale when extension would overlap subsequent subtitles")))
+                    (funcall scale-subtitles :reverse))
+                (save-excursion
+                  ;; Moving backward - Make sure the last subtitle will not
+                  ;; precede the first subtitle.
+                  (unless (> new-end-start-msecs beg-start-msecs)
+                    (user-error "Can't scale when contraction would eliminate region"))
+                  (goto-char end)
+                  (move-subtitle msecs :ignore-negative-duration)
+                  (funcall scale-subtitles))))))))))
+
 (defun subed--move-subtitles-in-region (msecs beg end)
   "Move subtitles in region specified by BEG and END by MSECS milliseconds."
   (unless (= msecs 0)
@@ -375,6 +458,59 @@ but we move the start time first."
               (subed-forward-subtitle-id)
               (subed-for-each-subtitle (point) end nil
                 (move-subtitle msecs :ignore-negative-duration)))))))))
+
+(defun subed-scale-subtitles (msecs &optional beg end)
+  "Scale subtitles between BEG and END after moving END MSECS.
+Use a negative MSECS value to move END backward.
+If END is nil, END will be the last subtitle in the buffer.
+If BEG is nil, BEG will be the first subtitle in the buffer."
+  (let ((beg (or beg (point-min)))
+        (end (or end (point-max))))
+    (subed--scale-subtitles-in-region msecs beg end)
+    (when (subed-replay-adjusted-subtitle-p)
+      (save-excursion
+        (goto-char end)
+        (subed-jump-to-subtitle-id)
+        (subed-mpv-jump (subed-subtitle-msecs-start))))))
+
+(defun subed-scale-subtitles-forward (&optional arg)
+  "Scale subtitles after region is extended `subed-milliseconds-adjust'.
+
+Scaling adjusts start and stop by the same amount, preserving
+subtitle duration.
+
+All subtitles that are fully or partially in the active region
+are moved so they are placed proportionally in the new range.
+
+If prefix argument ARG is given, it is used to extend the end of the region
+`subed-milliseconds-adjust' before proportionally adjusting subtitles.  If the
+prefix argument is given but not numerical,
+`subed-milliseconds-adjust' is reset to its default value.
+
+Example usage:
+  \\[universal-argument] 1000 \\[subed-scale-subtitles-forward] Extend region 1000ms forward in time and scale subtitles in region
+           \\[subed-scale-subtitles-forward] Extend region another 1000ms forward in time and scale subtitles again
+   \\[universal-argument] 500 \\[subed-scale-subtitles-forward] Extend region 500ms forward in time and scale subtitles in region
+           \\[subed-scale-subtitles-forward] Extend region another 500ms forward in time and scale subtitles again
+       \\[universal-argument] \\[subed-scale-subtitles-forward] Extend region 100ms (the default) forward in time and scale subtitles in region
+           \\[subed-scale-subtitles-forward] Extend region another 100ms (the default) forward in time and scale subtitles again"
+  (interactive "P")
+  (let ((deactivate-mark nil)
+        (msecs (subed-get-milliseconds-adjust arg))
+        (beg (when mark-active (region-beginning)))
+        (end (when mark-active (region-end))))
+    (subed-scale-subtitles msecs beg end)))
+
+(defun subed-scale-subtitles-backward (&optional arg)
+  "Scale subtitles after region is shortened `subed-milliseconds-adjust'.
+
+See `subed-scale-subtitles-forward' about ARG."
+  (interactive "P")
+  (let ((deactivate-mark nil)
+        (msecs (* -1 (subed-get-milliseconds-adjust arg)))
+        (beg (when mark-active (region-beginning)))
+        (end (when mark-active (region-end))))
+    (subed-scale-subtitles msecs beg end)))
 
 (defun subed-move-subtitles (msecs &optional beg end)
   "Move subtitles between BEG and END MSECS milliseconds forward.
@@ -1029,6 +1165,135 @@ Return nil if function `buffer-file-name' returns nil."
 	          (throw 'found-videofile file-base-video))
 	        (when (file-exists-p file-stem-video)
 	          (throw 'found-videofile file-stem-video))))))))
+
+;;; Inserting HTML-like tags
+
+(defvar subed--html-tag-history nil
+  "History of HTML-like tags in subtitles.")
+(defvar subed--html-attr-history nil
+  "History of HTML-like attributes in subtitles.")
+
+(defun subed-insert-html-tag (begin end tag &optional attributes)
+  "Insert a pair of HTML-like tags around the region.
+If region is not active, insert a pair of tags and put the point
+between them.  If called with a prefix argument, also ask for
+attribute(s)."
+  (interactive (let* ((region-p (use-region-p))
+		      (begin (if region-p (region-beginning) (point)))
+		      (end (if region-p (region-end) (point)))
+		      (tag (read-string "Tag: " nil 'subed--html-tag-history))
+		      (attributes (when current-prefix-arg
+				    (read-string "Attribute(s): " nil 'subed--html-attr-history))))
+		 (list begin end tag attributes)))
+  (save-excursion
+    (push (point) buffer-undo-list)
+    (goto-char end)
+    (insert "</" tag ">")
+    (goto-char begin)
+    (insert-before-markers "<" tag)
+    (when attributes (insert-before-markers " " attributes))
+    (insert-before-markers ">")))
+
+(defun subed-insert-html-tag-italic (begin end)
+  "Insert a pair of <i> tags at point or around the region."
+  (interactive (let* ((region-p (use-region-p))
+		      (begin (if region-p (region-beginning) (point)))
+		      (end (if region-p (region-end) (point))))
+		 (list begin end)))
+  (subed-insert-html-tag begin end "i"))
+
+(defun subed-insert-html-tag-bold (begin end)
+  "Insert a pair of <b> tags at point or around the region."
+  (interactive (let* ((region-p (use-region-p))
+		      (begin (if region-p (region-beginning) (point)))
+		      (end (if region-p (region-end) (point))))
+		 (list begin end)))
+  (subed-insert-html-tag begin end "b"))
+
+;;; Characters per second computation
+
+(defun subed-show-cps-p ()
+  "Whether CPS is shown for the current subtitle."
+  (member #'subed--update-cps-overlay after-change-functions))
+
+(defun subed-enable-show-cps (&optional quiet)
+  "Enable showing CPS next to the subtitle heading."
+  (interactive "p")
+  (add-hook 'after-change-functions #'subed--update-cps-overlay nil t)
+  (add-hook 'subed-subtitle-motion-hook #'subed--move-cps-overlay-to-current-subtitle nil t)
+  (add-hook 'after-save-hook #'subed--move-cps-overlay-to-current-subtitle nil t)
+  (unless quiet
+    (message "Enabled showing characters per second")))
+
+(defun subed-disable-show-cps (&optional quiet)
+  "Disable showing CPS next to the subtitle heading."
+  (interactive)
+  (remove-hook 'after-change-functions #'subed--update-cps-overlay t)
+  (remove-hook 'subed-subtitle-motion-hook #'subed--move-cps-overlay-to-current-subtitle t)
+  (remove-hook 'after-save-hook #'subed--move-cps-overlay-to-current-subtitle t)
+  (unless quiet
+    (message "Disabled showing characters per second")))
+
+(defun subed-toggle-show-cps ()
+  "Enable or disable showing CPS next to the subtitle heading."
+  (interactive)
+  (if (subed-show-cps-p)
+      (subed-disable-show-cps)
+    (subed-enable-show-cps)))
+
+(defvar subed-transform-for-cps #'subed--strip-tags)
+
+(defun subed--strip-tags (string)
+  "Strip HTML-like tags from STRING."
+  (with-temp-buffer
+    (insert string)
+    (goto-char 1)
+    (while (re-search-forward "</?[^>]+>" nil t)
+      (delete-region (match-beginning 0) (match-end 0)))
+    (buffer-string)))
+
+(defun subed-calculate-cps (&optional print-message)
+  "Calculate characters per second of the current subtitle."
+  (interactive "p")
+  (save-match-data
+    (let* ((msecs-start (ignore-errors (subed-subtitle-msecs-start)))
+	   (msecs-stop (ignore-errors (subed-subtitle-msecs-stop)))
+	   (text (if (fboundp subed-transform-for-cps)
+		     (funcall subed-transform-for-cps (subed-subtitle-text))
+		   (subed-subtitle-text)))
+	   (length (length text))
+	   (cps (when (and (numberp msecs-stop)
+			   (numberp msecs-start))
+		  (/ length 0.001 (- msecs-stop msecs-start)))))
+      (if (and print-message cps)
+	  (message "%.1f characters per second" cps)
+	cps))))
+
+(defvar-local subed--cps-overlay nil)
+
+(defun subed--move-cps-overlay-to-current-subtitle ()
+  "Move the CPS overlay to the current subtitle."
+  (let* ((begin (save-excursion
+		  (subed-jump-to-subtitle-time-start)
+		  (point)))
+	 (end (save-excursion
+		(goto-char begin)
+		(line-end-position))))
+    (if (overlayp subed--cps-overlay)
+	(move-overlay subed--cps-overlay begin end (current-buffer))
+      (setq subed--cps-overlay (make-overlay begin end)))
+    (subed--update-cps-overlay)))
+
+(defun subed--update-cps-overlay (&rest _rest)
+  "Update the CPS overlay.
+This accepts and ignores any number of arguments so that it can
+be run in `after-change-functions'."
+  (let ((cps (subed-calculate-cps)))
+    (when (numberp cps)
+      (overlay-put
+       subed--cps-overlay
+       'after-string
+       (propertize (format " %.1f CPS" cps) 'face 'shadow 'display '(height 0.9))))))
 
 (provide 'subed-common)
 ;;; subed-common.el ends here

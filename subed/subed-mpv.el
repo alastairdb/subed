@@ -320,6 +320,22 @@ See \"List of events\" in mpv(1)."
       (subed-debug "Seeking player to focused subtitle: %S" cur-sub-start)
       (subed-mpv-jump cur-sub-start))))
 
+(defun subed-mpv-frame-step ()
+  "Step one frame forward.
+Set up keybindings so that repeatedly pressing `,' and `.' moves
+by frames until any other key is pressed."
+  (interactive)
+  (subed-mpv--client-send `(frame-step))
+  (set-transient-map subed-mpv-frame-step-map))
+
+(defun subed-mpv-frame-back-step ()
+  "Step one frame backward.
+Set up keybindings so that repeatedly pressing `,' and `.' moves
+by frames until any other key is pressed."
+  (interactive)
+  (subed-mpv--client-send `(frame-back-step))
+  (set-transient-map subed-mpv-frame-step-map))
+
 (defun subed-mpv-add-subtitles (file)
   "Load FILE as subtitles in mpv."
   (subed-mpv--client-send `(sub-add ,file select)))

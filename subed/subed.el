@@ -42,6 +42,13 @@
 (eval-when-compile
   (require 'cl-macs))
 
+(defconst subed-mpv-frame-step-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map "." #'subed-mpv-frame-step)
+    (define-key map "," #'subed-mpv-frame-back-step)
+    map)
+  "A keymap for stepping the video by frames.")
+
 (setq subed-mode-map
   (let ((subed-mode-map (make-keymap)))
     (define-key subed-mode-map (kbd "M-n") #'subed-forward-subtitle-text)
@@ -56,6 +63,8 @@
     (define-key subed-mode-map (kbd "C-M-p") #'subed-move-subtitle-backward)
     (define-key subed-mode-map (kbd "C-M-f") #'subed-shift-subtitle-forward)
     (define-key subed-mode-map (kbd "C-M-b") #'subed-shift-subtitle-backward)
+    (define-key subed-mode-map (kbd "C-M-x") #'subed-scale-subtitles-forward)
+    (define-key subed-mode-map (kbd "C-M-S-x") #'subed-scale-subtitles-backward)
     (define-key subed-mode-map (kbd "M-i") #'subed-insert-subtitle)
     (define-key subed-mode-map (kbd "C-M-i") #'subed-insert-subtitle-adjacent)
     (define-key subed-mode-map (kbd "M-k") #'subed-kill-subtitle)
@@ -67,6 +76,7 @@
     (define-key subed-mode-map (kbd "C-c C-d") #'subed-toggle-debugging)
     (define-key subed-mode-map (kbd "C-c C-v") #'subed-mpv-find-video)
     (define-key subed-mode-map (kbd "C-c C-u") #'subed-mpv-play-video-from-url)
+    (define-key subed-mode-map (kbd "C-c C-f") subed-mpv-frame-step-map)
     (define-key subed-mode-map (kbd "C-c C-p") #'subed-toggle-pause-while-typing)
     (define-key subed-mode-map (kbd "C-c C-l") #'subed-toggle-loop-over-current-subtitle)
     (define-key subed-mode-map (kbd "C-c C-r") #'subed-toggle-replay-adjusted-subtitle)
@@ -74,6 +84,11 @@
     (define-key subed-mode-map (kbd "C-c ]") #'subed-copy-player-pos-to-stop-time)
     (define-key subed-mode-map (kbd "C-c .") #'subed-toggle-sync-point-to-player)
     (define-key subed-mode-map (kbd "C-c ,") #'subed-toggle-sync-player-to-point)
+    (define-key subed-mode-map (kbd "C-c C-t") (let ((html-tag-keymap (make-sparse-keymap)))
+						 (define-key html-tag-keymap (kbd "C-t") #'subed-insert-html-tag)
+						 (define-key html-tag-keymap (kbd "C-i") #'subed-insert-html-tag-italic)
+						 (define-key html-tag-keymap (kbd "C-b") #'subed-insert-html-tag-bold)
+						 html-tag-keymap))
     subed-mode-map))
 
 ;;;###autoload
@@ -193,7 +208,8 @@ Key bindings:
   (subed-enable-sync-point-to-player :quiet)
   (subed-enable-sync-player-to-point :quiet)
   (subed-enable-replay-adjusted-subtitle :quiet)
-  (subed-enable-loop-over-current-subtitle :quiet))
+  (subed-enable-loop-over-current-subtitle :quiet)
+  (subed-enable-show-cps :quiet))
 
 ;; Internally, supported formats are listed in `subed--init-alist', which
 ;; associates file extensions with format-specific init methods (e.g. "srt" ->
