@@ -2,21 +2,40 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+all: clean autoloads compile
+
 clean:
 	find . -name "*.elc" -delete
+	rm subed/subed-autoloads.el
+	rm -f coverage/.*.json
 
-test:
+test: autoloads test-coverage package-lint checkdoc
+
+test-coverage:
+	mkdir -p coverage
+	UNDERCOVER_FORCE=true emacs -batch -L . -f package-initialize -f buttercup-run-discover
+
+test-only:
 	emacs -batch -f package-initialize -L . -f buttercup-run-discover
-	emacs --no-init-file --batch \
+
+package-lint:
+	emacs --no-init-file -f package-initialize --batch \
 		  --eval "(require 'package-lint)" \
 	      --file package-lint-batch-and-exit \
 	      ./subed/subed.el
+checkdoc:
 	emacs --quick --batch --eval "(checkdoc-file \"subed/subed.el\")"
 	emacs --quick --batch --eval "(checkdoc-file \"subed/subed-config.el\")"
 	emacs --quick --batch --eval "(checkdoc-file \"subed/subed-mpv.el\")"
 	emacs --quick --batch --eval "(checkdoc-file \"subed/subed-srt.el\")"
+	emacs --quick --batch --eval "(checkdoc-file \"subed/subed-vtt.el\")"
+	emacs --quick --batch --eval "(checkdoc-file \"subed/subed-ass.el\")"
 
-test-compile:
+autoloads:
+	emacs --quick --batch --eval "(progn (setq generated-autoload-file (expand-file-name \"subed-autoloads.el\" \"subed\") backup-inhibited t) \
+	(update-directory-autoloads \"./subed\"))"
+
+compile:
 	emacs --quick --batch --eval "(progn (add-to-list 'load-path (expand-file-name \"subed\" default-directory)) \
 	                                     (byte-compile-file \"subed/subed.el\"))"
 	emacs --quick --batch --eval "(progn (add-to-list 'load-path (expand-file-name \"subed\" default-directory)) \
@@ -28,5 +47,13 @@ test-compile:
 	emacs --quick --batch --eval "(progn (add-to-list 'load-path (expand-file-name \"subed\" default-directory)) \
 	                                     (byte-compile-file \"subed/subed-srt.el\"))"
 	emacs --quick --batch --eval "(progn (add-to-list 'load-path (expand-file-name \"subed\" default-directory)) \
+	                                     (byte-compile-file \"subed/subed-vtt.el\"))"
+	emacs --quick --batch --eval "(progn (add-to-list 'load-path (expand-file-name \"subed\" default-directory)) \
+	                                     (byte-compile-file \"subed/subed-ass.el\"))"
+	emacs --quick --batch --eval "(progn (add-to-list 'load-path (expand-file-name \"subed\" default-directory)) \
 	                                     (byte-compile-file \"subed/subed-debug.el\"))"
-	make clean
+
+test-compile: compile clean
+
+test-emacs:
+	emacs -Q -L ./subed --eval "(require 'subed-autoloads)"

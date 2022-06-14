@@ -34,7 +34,7 @@
   :prefix "subed-")
 
 (defvar-local subed--subtitle-format nil
-  "Short form of the name of the subtitle format in the current buffer (e.g. \"srt\").")
+  "Short form of the subtitle format in the current buffer (e.g. \"srt\").")
 
 ;; This variable is set in subed.el to avoid compiler warnings because it uses
 ;; functions defined in subed-common.el, and (require 'subed-common) results in
@@ -88,7 +88,7 @@
   :type 'hook
   :group 'subed)
 
-(defcustom subed-video-extensions '("mkv" "mp4" "webm" "avi" "ts" "ogv")
+(defcustom subed-video-extensions '("mkv" "mp4" "webm" "avi" "ts" "ogv" "wav" "ogg" "mp3")
   "Video file name extensions."
   :type 'list
   :group 'subed)
@@ -158,8 +158,29 @@ If set to zero or smaller, playback is paused."
   :group 'subed)
 
 (defcustom subed-enforce-time-boundaries t
-  "Whether to refuse time adjustments that result in overlapping subtitles or negative duration."
+  "Non-nil means refuse time adjustments that result in invalid subtitles.
+For example, refuse adjustments that result in overlapping
+subtitles or negative duration."
   :type 'boolean
+  :group 'subed)
+
+(defcustom subed-sanitize-functions
+  '(subed-sanitize-format
+    subed-sort
+    subed-trim-overlap-maybe-sanitize)
+  "Functions to call when sanitizing subtitles."
+  :type '(repeat function)
+  :local t
+  :group 'subed)
+
+(defcustom subed-validate-functions
+  '(subed-validate-format
+    subed-trim-overlap-maybe-check)
+  "Functions to validate this buffer.
+Validation functions should throw an error or prompt the user for
+action."
+  :type '(repeat function)
+  :local t
   :group 'subed)
 
 (defcustom subed-loop-seconds-before 1
@@ -180,7 +201,9 @@ If set to zero or smaller, playback is paused."
 
 
 (defcustom subed-point-sync-delay-after-motion 1.0
-  "Number of seconds the player can't adjust point after point was moved by the user."
+  "Player sync point delay in seconds after the user moves the point.
+This prevents the player from moving the point while the user is
+doing so."
   :type 'float
   :group 'subed)
 
@@ -210,8 +233,42 @@ hardcoded."
   "Return base name of buffer file name or a default name."
   (file-name-nondirectory (or (buffer-file-name) "unnamed")))
 
+;;; Trim overlaps
 
-;; Hooks
+;; checked by subed-sort
+(defcustom subed-trim-overlap-on-save nil
+  "Non-nil means trim all overlapping subtitles when saving.
+Subtitles are trimmed according to `subed-trim-overlap-use-start'."
+  :type '(choice
+          (const :tag "Trim" nil)
+          (const :tag "Do not trim" t))
+  :group 'subed)
+
+(defcustom subed-trim-overlap-check-on-save nil
+  "Non-nil means check for overlapping subtitles when saving."
+  :type '(choice
+          (const :tag "Check" nil)
+          (const :tag "Do not check" t))
+  :group 'subed)
+
+;; checked by subed mode hook
+(defcustom subed-trim-overlap-check-on-load nil
+  "Non-nil means check for overlapping subtitles on entering subed mode.
+Subtitles are trimmed according to `subed-trim-overlap-use-start'."
+  :type '(choice
+          (const :tag "Check" t)
+          (const :tag "Do not check" nil))
+  :group 'subed)
+
+(defcustom subed-trim-overlap-use-start nil
+  "Non-nil means adjust the start time of the following subtitle for overlaps.
+Otherwise, adjust the stop time of the current subtitle."
+  :type '(choice
+          (const :tag "Adjust stop time of the current subtitle" nil)
+          (const :tag "Adjust start time of the next subtitle" t))
+  :group 'subed)
+
+;;; Hooks
 
 (defvar-local subed-subtitle-time-adjusted-hook ()
   "Functions to call when a subtitle's start or stop time has changed.

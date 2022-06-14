@@ -47,6 +47,8 @@
                                            subed-mpv-jump-to-current-subtitle)
   "Functions to call when mpv has loaded a file and starts playing.")
 
+(defvar-local subed-mpv-video-file nil "Current file or URL.")
+
 (defvar-local subed-mpv--server-proc nil
   "Running mpv process.")
 
@@ -212,28 +214,29 @@ string."
   ;; Therefore we maintain a buffer and process only complete lines.
   (when (buffer-live-p (process-buffer proc))
     (let ((orig-buffer (current-buffer)))
-	  (with-current-buffer (process-buffer proc)
-        ;; Insert new response where previous response ended
-	    (let* ((proc-mark (process-mark proc))
-               (moving (= (point) proc-mark)))
-		  (save-excursion
-		    (goto-char proc-mark)
-		    (insert response)
-		    (set-marker proc-mark (point)))
-		  (if moving (goto-char proc-mark)))
-	    ;; Process and remove all complete lines of JSON (lines are complete if
-	    ;; they end with \n)
-	    (let ((p0 (point-min)))
-		  (while (progn (goto-char p0)
-                        (end-of-line)
-			            (equal (following-char) ?\n))
-		    (let* ((p1 (point))
-			       (line (buffer-substring p0 p1)))
-			  (delete-region p0 (+ p1 1))
-              ;; Return context to the subtitle file buffer because we're using
-              ;; buffer-local variables to store player state.
-              (with-current-buffer orig-buffer
-			    (subed-mpv--client-handle-json line)))))))))
+      (when (derived-mode-p 'subed-mode)
+	      (with-current-buffer (process-buffer proc)
+          ;; Insert new response where previous response ended
+	        (let* ((proc-mark (process-mark proc))
+                 (moving (= (point) proc-mark)))
+		        (save-excursion
+		          (goto-char proc-mark)
+		          (insert response)
+		          (set-marker proc-mark (point)))
+		        (if moving (goto-char proc-mark)))
+	        ;; Process and remove all complete lines of JSON (lines are complete if
+	        ;; they end with \n)
+	        (let ((p0 (point-min)))
+		        (while (progn (goto-char p0)
+                          (end-of-line)
+			                    (equal (following-char) ?\n))
+		          (let* ((p1 (point))
+			               (line (buffer-substring p0 p1)))
+			          (delete-region p0 (+ p1 1))
+                ;; Return context to the subtitle file buffer because we're using
+                ;; buffer-local variables to store player state.
+                (with-current-buffer orig-buffer
+			            (subed-mpv--client-handle-json line))))))))))
 
 (defun subed-mpv--client-handle-json (json-string)
   "Process server response JSON-STRING."
@@ -300,7 +303,7 @@ See \"List of events\" in mpv(1)."
 
 (defun subed-mpv-playback-speed (factor)
   "Play video slower (FACTOR < 1) or faster (FACTOR > 1)."
-  (interactive)
+  (interactive "NFactor: ")
   (unless (eq subed-mpv-playback-speed factor)
     (when (subed-mpv--client-send `(set_property speed ,factor))
       (setq subed-mpv-playback-speed factor))))
@@ -315,6 +318,7 @@ See \"List of events\" in mpv(1)."
 
 (defun subed-mpv-jump-to-current-subtitle ()
   "Move playback position to start of currently focused subtitle if possible."
+  (interactive)
   (let ((cur-sub-start (subed-subtitle-msecs-start)))
     (when cur-sub-start
       (subed-debug "Seeking player to focused subtitle: %S" cur-sub-start)
@@ -373,6 +377,7 @@ See the mpv manual for a list of supported URL types.  If you
 have youtube-dl installed, mpv can open videos from a variety of
 hosting providers."
   (interactive "MURL: ")
+  (setq subed-mpv-video-file url)
   (subed-mpv--play url))
 
 (defun subed-mpv-find-video (file)
@@ -381,6 +386,7 @@ hosting providers."
 Video files are expected to have any of the extensions listed in
 `subed-video-extensions'."
   (interactive (list (read-file-name "Find video: " nil nil t nil #'subed-mpv--is-video-file-p)))
+  (setq subed-mpv-video-file (expand-file-name file))
   (subed-mpv--play (expand-file-name file)))
 
 (defun subed-mpv--add-subtitle-after-first-save ()

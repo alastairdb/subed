@@ -35,14 +35,352 @@
 (eval-when-compile
   (require 'cl-macs))
 
-;;; Utilities
+;;; Generic functions
 
-(defun subed-msecs-to-timestamp (msecs)
-  "Convert MSECS to human-readable string."
-  ;; We need to wrap format-seconds in save-match-data because it does regexp
-  ;; stuff and we need to preserve our own match-data.
-  (concat (save-match-data (format-seconds "%02h:%02m:%02s" (/ msecs 1000)))
-          "," (format "%03d" (mod msecs 1000))))
+
+(defvar-local subed--regexp-separator nil "Regexp separating subtitles.")
+(defvar-local subed--regexp-timestamp nil "Regexp matching timestamps.")
+
+(defmacro subed-define-generic-function (name args &rest body)
+  "Declare an object method and provide the old way of calling it.
+NAME is the part of the function name that will go after the
+subed- prefix.  ARGS are the arguments for the function.  BODY is
+the body of the function, and may include a docstring or an
+interactive form."
+  (declare
+   (indent defun)
+   (debug defun))
+  (let (is-interactive
+        doc)
+    (when (stringp (car body))
+      (setq doc (pop body)))
+    (setq is-interactive (eq (caar body) 'interactive))
+    `(progn
+       (cl-defgeneric ,(intern (concat "subed--" (symbol-name name)))
+           ,args
+         ,doc
+         ,@(if is-interactive
+               (cdr body)
+             body))
+       ;; Define old internal functions as obsolete aliases
+       ,@(mapcar (lambda (sub-format)
+                   `(define-obsolete-function-alias
+                      (quote ,(intern (format "subed-%s--%s" sub-format (symbol-name name))))
+                      (function ,(intern (format "subed-%s" (symbol-name name))))
+                      "1.0.0"
+                      ,doc))
+                 '("srt" "vtt" "ass"))
+       ,(if is-interactive
+            `(defun ,(intern (concat "subed-" (symbol-name name))) ,args
+               ,(concat doc "\n\nThis function calls the generic function `"
+                        (concat "subed--" (symbol-name name)) "' for the actual implementation.")
+               ,(car body)
+               (,(intern (concat "subed--" (symbol-name name)))
+                ,@(delq nil (mapcar (lambda (a)
+                                      (unless (string-match "^&" (symbol-name a))
+                                        a))
+                                    args))))
+          `(defalias ',(intern (concat "subed-" (symbol-name name)))
+             #',(intern (concat "subed--" (symbol-name name)))
+             ,doc)))))
+
+(subed-define-generic-function timestamp-to-msecs (time-string)
+  "Find timestamp pattern in TIME-STRING and convert it to milliseconds.
+Return nil if TIME-STRING doesn't match the pattern.")
+
+(subed-define-generic-function msecs-to-timestamp (msecs)
+  "Convert MSECS to string in the subtitle's timestamp format.")
+
+(subed-define-generic-function subtitle-id ()
+  "Return the ID of the subtitle at point or nil if there is no ID.")
+
+(subed-define-generic-function subtitle-id-max ()
+  "Return the ID of the last subtitle or nil if there are no subtitles."
+  (save-excursion
+    (goto-char (point-max))
+    (subed-subtitle-id)))
+
+(subed-define-generic-function subtitle-id-at-msecs (msecs)
+  "Return the ID of the subtitle at MSECS milliseconds.
+Return nil if there is no subtitle at MSECS.")
+
+(subed-define-generic-function jump-to-subtitle-id (&optional sub-id)
+  "Move to the ID of a subtitle and return point.
+If SUB-ID is not given, focus the current subtitle's ID.
+Return point or nil if no subtitle ID could be found."
+  (interactive))
+
+(subed-define-generic-function jump-to-subtitle-time-start (&optional sub-id)
+  "Move point to subtitle's start time.
+If SUB-ID is not given, use subtitle on point.
+Return point or nil if no start time could be found."
+  (interactive))
+
+(subed-define-generic-function jump-to-subtitle-time-stop (&optional sub-id)
+  "Move point to subtitle's stop time.
+If SUB-ID is not given, use subtitle on point.
+Return point or nil if no stop time could be found."
+  (interactive))
+
+(subed-define-generic-function jump-to-subtitle-text (&optional sub-id)
+  "Move point on the first character of subtitle's text.
+If SUB-ID is not given, use subtitle on point.
+Return point or nil if a the subtitle's text can't be found."
+  (interactive))
+
+(subed-define-generic-function jump-to-subtitle-end (&optional sub-id)
+  "Move point after the last character of the subtitle's text.
+If SUB-ID is not given, use subtitle on point.
+Return point or nil if point did not change or if no subtitle end
+can be found."
+  (interactive))
+
+(subed-define-generic-function jump-to-subtitle-id-at-msecs (msecs)
+  "Move point to the ID of the subtitle that is playing at MSECS.
+Return point or nil if point is still on the same subtitle.
+See also `subed-subtitle-id-at-msecs'."
+  (let ((current-sub-id (subed-subtitle-id))
+        (target-sub-id (subed-subtitle-id-at-msecs msecs)))
+    (when (and target-sub-id current-sub-id (not (equal target-sub-id current-sub-id)))
+      (subed-jump-to-subtitle-id target-sub-id))))
+
+(subed-define-generic-function jump-to-subtitle-text-at-msecs (msecs)
+  "Move point to the text of the subtitle that is playing at MSECS.
+Return point or nil if point is still on the same subtitle.
+See also `subed-vtt--subtitle-id-at-msecs'."
+  (when (subed-jump-to-subtitle-id-at-msecs msecs)
+    (subed-jump-to-subtitle-text)))
+
+(subed-define-generic-function forward-subtitle-id ()
+  "Move point to next subtitle's ID.
+Return point or nil if there is no next subtitle."
+  (interactive))
+
+(subed-define-generic-function backward-subtitle-id ()
+  "Move point to previous subtitle's ID.
+Return point or nil if there is no previous subtitle."
+  (interactive))
+
+(subed-define-generic-function forward-subtitle-text ()
+  "Move point to next subtitle's text.
+Return point or nil if there is no next subtitle."
+  (interactive)
+  (when (subed-forward-subtitle-id)
+    (subed-jump-to-subtitle-text)))
+
+(subed-define-generic-function backward-subtitle-text ()
+  "Move point to previous subtitle's text.
+Return point or nil if there is no previous subtitle."
+  (interactive)
+  (when (subed-backward-subtitle-id)
+    (subed-jump-to-subtitle-text)))
+
+(subed-define-generic-function forward-subtitle-end ()
+  "Move point to end of next subtitle.
+Return point or nil if there is no next subtitle."
+  (interactive)
+  (when (subed-forward-subtitle-id)
+    (subed-jump-to-subtitle-end)))
+
+(subed-define-generic-function backward-subtitle-end ()
+  "Move point to end of previous subtitle.
+Return point or nil if there is no previous subtitle."
+  (interactive)
+  (when (subed-backward-subtitle-id)
+    (subed-jump-to-subtitle-end)))
+
+(subed-define-generic-function forward-subtitle-time-start ()
+  "Move point to next subtitle's start time."
+  (interactive)
+  (when (subed-forward-subtitle-id)
+    (subed-jump-to-subtitle-time-start)))
+
+(subed-define-generic-function backward-subtitle-time-start ()
+  "Move point to previous subtitle's start time."
+  (interactive)
+  (when (subed-backward-subtitle-id)
+    (subed-jump-to-subtitle-time-start)))
+
+(subed-define-generic-function forward-subtitle-time-stop ()
+  "Move point to next subtitle's stop time."
+  (interactive)
+  (when (subed-forward-subtitle-id)
+    (subed-jump-to-subtitle-time-stop)))
+
+(subed-define-generic-function backward-subtitle-time-stop ()
+  "Move point to previous subtitle's stop time."
+  (interactive)
+  (when (subed-backward-subtitle-id)
+    (subed-jump-to-subtitle-time-stop)))
+
+(subed-define-generic-function subtitle-msecs-start (&optional sub-id)
+  "Subtitle start time in milliseconds or nil if it can't be found.
+If SUB-ID is not given, use subtitle on point."
+  (let ((timestamp (save-excursion
+                     (when (subed-jump-to-subtitle-time-start sub-id)
+                       (when (looking-at subed--regexp-timestamp)
+                         (match-string 0))))))
+    (when timestamp
+      (subed-timestamp-to-msecs timestamp))))
+
+(subed-define-generic-function subtitle-msecs-stop (&optional sub-id)
+  "Subtitle stop time in milliseconds or nil if it can't be found.
+If SUB-ID is not given, use subtitle on point."
+  (let ((timestamp (save-excursion
+                     (when (subed-jump-to-subtitle-time-stop sub-id)
+                       (when (looking-at subed--regexp-timestamp)
+                         (match-string 0))))))
+    (when timestamp
+      (subed-timestamp-to-msecs timestamp))))
+
+(subed-define-generic-function subtitle-text (&optional sub-id)
+  "Return subtitle's text or an empty string.
+If SUB-ID is not given, use subtitle on point."
+  (or (save-excursion
+        (let ((beg (subed-jump-to-subtitle-text sub-id))
+              (end (subed-jump-to-subtitle-end sub-id)))
+          (when (and beg end)
+            (buffer-substring beg end)))) ""))
+
+(subed-define-generic-function subtitle-relative-point ()
+  "Point relative to subtitle's ID or nil if ID can't be found."
+  (let ((start-point (save-excursion
+                       (when (subed-jump-to-subtitle-id)
+                         (point)))))
+    (when start-point
+      (- (point) start-point))))
+
+(subed-define-generic-function set-subtitle-time-start (msecs &optional sub-id)
+  "Set subtitle start time to MSECS milliseconds.
+
+If SUB-ID is not given, set the start of the current subtitle.
+
+Return the new subtitle start time in milliseconds."
+  (save-excursion
+    (when (or (not sub-id)
+              (and sub-id (subed-jump-to-subtitle-id sub-id)))
+      (when (and (subed-jump-to-subtitle-time-start sub-id)
+                 (looking-at subed--regexp-timestamp))
+        (replace-match
+         (save-match-data (subed-msecs-to-timestamp msecs)))))))
+
+(subed-define-generic-function set-subtitle-time-stop (msecs &optional sub-id)
+  "Set subtitle stop time to MSECS milliseconds.
+
+If SUB-ID is not given, set the stop of the current subtitle.
+
+Return the new subtitle stop time in milliseconds."
+  (save-excursion
+    (when (and (subed-jump-to-subtitle-time-stop sub-id)
+               (looking-at subed--regexp-timestamp))
+      (replace-match
+       (save-match-data (subed-msecs-to-timestamp msecs))))))
+
+(subed-define-generic-function make-subtitle (&optional id start stop text)
+  "Generate new subtitle string.
+
+ID, START default to 0.
+STOP defaults to (+ START `subed-subtitle-spacing')
+TEXT defaults to an empty string."
+  (interactive "P"))
+
+(subed-define-generic-function prepend-subtitle (&optional id start stop text)
+  "Insert new subtitle before the subtitle at point.
+
+ID and START default to 0.
+STOP defaults to (+ START `subed-subtitle-spacing')
+TEXT defaults to an empty string.
+
+Move point to the text of the inserted subtitle.
+Return new point."
+  (interactive "P"))
+
+(subed-define-generic-function append-subtitle (&optional id start stop text)
+  "Insert new subtitle after the subtitle at point.
+
+ID, START default to 0.
+STOP defaults to (+ START `subed-subtitle-spacing')
+TEXT defaults to an empty string.
+
+Move point to the text of the inserted subtitle.
+Return new point."
+  (interactive "P"))
+
+(subed-define-generic-function kill-subtitle ()
+  "Remove subtitle at point."
+  (interactive)
+  (let ((beg (save-excursion (subed-jump-to-subtitle-id)
+                             (point)))
+        (end (save-excursion (subed-jump-to-subtitle-id)
+                             (when (subed-forward-subtitle-id)
+                               (point)))))
+    (if (not end)
+        ;; Removing the last subtitle because forward-subtitle-id returned nil
+        (setq beg (save-excursion (goto-char beg)
+                                  (subed-backward-subtitle-end)
+                                  (1+ (point)))
+              end (save-excursion (goto-char (point-max)))))
+    (delete-region beg end)))
+
+(subed-define-generic-function subtitle-list (&optional beg end)
+  "Return the subtitles from BEG to END as a list.
+The list will contain entries of the form (id start stop text).
+If BEG and END are not specified, use the whole buffer."
+  (let (result)
+    (subed-for-each-subtitle
+      (or beg (point-min))
+      (or end (point-max))
+      nil
+      (when (subed-subtitle-msecs-start)
+        (setq result
+              (cons
+               (list
+                (subed-subtitle-id)
+                (subed-subtitle-msecs-start)
+                (subed-subtitle-msecs-stop)
+                (subed-subtitle-text))
+               result))))
+    (nreverse result)))
+
+(subed-define-generic-function sanitize ()
+  "Sanitize this file."
+  (interactive)
+  (run-hooks 'subed-sanitize-functions))
+
+(subed-define-generic-function sanitize-format ()
+  "Remove surplus newlines and whitespace."
+  nil)
+
+(subed-define-generic-function validate ()
+  "Move point to the first invalid subtitle and report an error."
+  (interactive)
+  (run-hooks 'subed-validate-functions))
+
+(subed-define-generic-function validate-format ()
+  "Validate format-specific rules."
+  nil)
+
+(subed-define-generic-function regenerate-ids ()
+  "Ensure consecutive, unduplicated subtitle IDs in formats that use them."
+  nil)
+
+(defvar-local subed--regenerate-ids-soon-timer nil)
+(subed-define-generic-function regenerate-ids-soon ()
+  "Delay regenerating subtitle IDs for a short amount of time.
+
+  Run `subed-regenerate-ids' in 100ms unless this function is
+called again within the next 100ms, in which case the previously
+scheduled call is canceled and another call is scheduled in
+100ms."
+  (interactive)
+  (when subed--regenerate-ids-soon-timer
+    (cancel-timer subed-srt--regenerate-ids-soon-timer))
+  (setq subed--regenerate-ids-soon-timer
+        (run-at-time 0.1 nil (lambda ()
+                               (setq subed--regenerate-ids-soon-timer nil)
+                               (subed-regenerate-ids)))))
+
+;;; Utilities
 
 (defmacro subed-save-excursion (&rest body)
   "Restore relative point within current subtitle after executing BODY.
@@ -110,6 +448,22 @@ Before BODY is run, point is placed on the subtitle's ID."
      (when replay-was-enabled-p
        (subed-enable-replay-adjusted-subtitle :quiet))))
 
+(defvar-local subed--batch-editing nil "Non-nil means suppress hooks and commands meant for interactive use.")
+(defmacro subed-batch-edit (&rest body)
+  "Run BODY as a batch edit.  Suppress hooks and replays."
+  (declare (indent defun))
+  `(progn
+     (let ((subed--batch-editing t))
+       (subed-with-subtitle-replay-disabled
+         (subed-disable-sync-point-to-player-temporarily)
+         (progn ,@body)))
+     (unless subed--batch-editing
+       ;; I wonder if we should do this here or if we should rely on
+       ;; it being in post-command-hook...
+       (when (subed-show-cps-p)
+         (subed--move-cps-overlay-to-current-subtitle)
+         (subed--update-cps-overlay)))))
+
 (defun subed--right-pad (string length fillchar)
   "Use FILLCHAR to make STRING LENGTH characters long."
   (concat string (make-string (- length (length string)) fillchar)))
@@ -118,21 +472,26 @@ Before BODY is run, point is placed on the subtitle's ID."
 ;;; Hooks for point motion and subtitle motion
 
 (defvar-local subed--current-point -1)
+(defvar-local subed--buffer-chars-modified-tick -1)
 (defvar-local subed--current-subtitle-id -1)
 (defun subed--post-command-handler ()
   "Detect point motion and user entering text and signal hooks."
   ;; Check for point motion first to avoid expensive calls to subed-subtitle-id
   ;; as often as possible.
-  (let ((new-point (point)))
-    (when (and new-point subed--current-point
-               (not (= new-point subed--current-point)))
+  (let ((new-point (point))
+        (new-buffer-chars-modified-tick (buffer-chars-modified-tick)))
+    (when (and
+           new-point subed--current-point
+           (not (and (= new-point subed--current-point)
+                     (= new-buffer-chars-modified-tick subed--buffer-chars-modified-tick))))
 
       ;; If point is synced to playback position, temporarily disable that so
       ;; that manual moves aren't cancelled immediately by automated moves.
       (subed-disable-sync-point-to-player-temporarily)
 
       ;; Store new point and fire signal.
-      (setq subed--current-point new-point)
+      (setq subed--current-point new-point
+            subed--buffer-chars-modified-tick new-buffer-chars-modified-tick)
       (run-hooks 'subed-point-motion-hook)
 
       ;; Check if point moved across subtitle boundaries.
@@ -650,7 +1009,7 @@ Return a list of values in the following order:
           msecs-min msecs-max msecs-avail msecs-per-sub msecs-between
           insert-subtitle-func)))
 
-(defun subed-insert-subtitle (&optional arg)
+(subed-define-generic-function insert-subtitle (&optional arg)
   "Insert subtitle(s) evenly spaced.
 
 The inserted subtitles are `subed-default-subtitle-length'
@@ -704,11 +1063,10 @@ following manner:
           (funcall insert-subtitle-func nil msecs-start msecs-stop nil)))
       (unless insert-before-current
         (dotimes (_ (1- number-of-subs))
-          (subed-backward-subtitle-text))))
-    (subed-regenerate-ids-soon))
+          (subed-backward-subtitle-text)))))
   (point))
 
-(defun subed-insert-subtitle-adjacent (&optional arg)
+(subed-define-generic-function insert-subtitle-adjacent (&optional arg)
   "Insert subtitle(s) close to each other.
 
 The inserted subtitles are `subed-default-subtitle-length'
@@ -755,11 +1113,10 @@ following manner:
           (funcall insert-subtitle-func nil msecs-start msecs-stop nil)))
       (unless insert-before-current
         (dotimes (_ (1- number-of-subs))
-          (subed-backward-subtitle-text))))
-    (subed-regenerate-ids-soon))
+          (subed-backward-subtitle-text)))))
   (point))
 
-(defun subed-split-subtitle (&optional offset)
+(subed-define-generic-function split-subtitle (&optional offset)
   "Split current subtitle at point.
 
 The subtitle text after point is moved to a new subtitle that is
@@ -817,12 +1174,16 @@ position of the point."
       (delete-region (point) (progn (subed-jump-to-subtitle-end) (skip-chars-forward " \t") (point)))
       (when (looking-at "[ \t]+") (replace-match ""))
       (subed-append-subtitle nil new-start-timestamp orig-end (string-trim new-text)))
-    (subed-regenerate-ids-soon)
     (point)))
 
 ;;; Merging
 
-(defun subed-merge-with-previous ()
+(subed-define-generic-function merge-with-next ()
+  "Merge the current subtitle with the next subtitle.
+Update the end timestamp accordingly."
+  (interactive))
+
+(subed-define-generic-function merge-with-previous ()
   "Merge the current subtitle with the previous subtitle.
 Update the end timestamp accordingly."
   (interactive)
@@ -1012,7 +1373,7 @@ If QUIET is non-nil, do not display a message in the minibuffer."
     (add-hook 'subed-subtitle-motion-hook #'subed--set-subtitle-loop :append :local)
     (subed-debug "Enabling loop: %s - %s" subed--subtitle-loop-start subed--subtitle-loop-stop)
     (when (subed-sync-point-to-player-p)
-      (subed-disable-sync-point-to-player)
+      (subed-disable-sync-point-to-player quiet)
       (setq subed--enable-point-to-player-sync-after-disabling-loop t))
     (unless quiet
       (message "Enabled looping over current subtitle"))))
@@ -1077,7 +1438,7 @@ If QUIET is non-nil, do not display a message in the minibuffer."
 
 See `subed-playback-speed-while-typing' and
 `subed-playback-speed-while-not-typing'."
-  (member #'subed--pause-while-typing after-change-functions))
+  (member #'subed--pause-while-typing post-command-hook))
 
 (defun subed-enable-pause-while-typing (&optional quiet)
   "Pause player while the user is editing a subtitle.
@@ -1087,7 +1448,7 @@ resumed automatically unless the player was paused already.
 
 If QUIET is non-nil, do not display a message in the minibuffer."
   (unless (subed-pause-while-typing-p)
-    (add-hook 'after-change-functions #'subed--pause-while-typing :append :local)
+    (add-hook 'post-command-hook #'subed--pause-while-typing :append :local)
     (unless quiet
       (subed-debug "%S" subed-playback-speed-while-typing)
       (if (<= subed-playback-speed-while-typing 0)
@@ -1100,7 +1461,7 @@ If QUIET is non-nil, do not display a message in the minibuffer."
 
 If QUIET is non-nil, do not display a message in the minibuffer."
   (when (subed-pause-while-typing-p)
-    (remove-hook 'after-change-functions #'subed--pause-while-typing :local)
+    (remove-hook 'post-command-hook #'subed--pause-while-typing :local)
     (unless quiet
       (message "Playback speed will not change while subtitle texts are edited"))))
 
@@ -1214,12 +1575,13 @@ attribute(s)."
 
 (defun subed-show-cps-p ()
   "Whether CPS is shown for the current subtitle."
-  (member #'subed--update-cps-overlay after-change-functions))
+  (member #'subed--update-cps-overlay post-command-hook))
 
 (defun subed-enable-show-cps (&optional quiet)
   "Enable showing CPS next to the subtitle heading."
   (interactive "p")
-  (add-hook 'after-change-functions #'subed--update-cps-overlay nil t)
+  ;; FIXME: Consider displaying CPS on all cues (via jit-lock) rather than the current one?
+  (add-hook 'post-command-hook #'subed--update-cps-overlay nil t)
   (add-hook 'subed-subtitle-motion-hook #'subed--move-cps-overlay-to-current-subtitle nil t)
   (add-hook 'after-save-hook #'subed--move-cps-overlay-to-current-subtitle nil t)
   (unless quiet
@@ -1228,7 +1590,7 @@ attribute(s)."
 (defun subed-disable-show-cps (&optional quiet)
   "Disable showing CPS next to the subtitle heading."
   (interactive)
-  (remove-hook 'after-change-functions #'subed--update-cps-overlay t)
+  (remove-hook 'post-command-hook #'subed--update-cps-overlay t)
   (remove-hook 'subed-subtitle-motion-hook #'subed--move-cps-overlay-to-current-subtitle t)
   (remove-hook 'after-save-hook #'subed--move-cps-overlay-to-current-subtitle t)
   (unless quiet
@@ -1255,45 +1617,200 @@ attribute(s)."
 (defun subed-calculate-cps (&optional print-message)
   "Calculate characters per second of the current subtitle."
   (interactive "p")
-  (save-match-data
-    (let* ((msecs-start (ignore-errors (subed-subtitle-msecs-start)))
-	   (msecs-stop (ignore-errors (subed-subtitle-msecs-stop)))
-	   (text (if (fboundp subed-transform-for-cps)
-		     (funcall subed-transform-for-cps (subed-subtitle-text))
-		   (subed-subtitle-text)))
-	   (length (length text))
-	   (cps (when (and (numberp msecs-stop)
-			   (numberp msecs-start))
-		  (/ length 0.001 (- msecs-stop msecs-start)))))
-      (if (and print-message cps)
-	  (message "%.1f characters per second" cps)
-	cps))))
+  (let* ((msecs-start (ignore-errors (subed-subtitle-msecs-start)))
+	       (msecs-stop (ignore-errors (subed-subtitle-msecs-stop)))
+	       (text (if (fboundp subed-transform-for-cps)
+		               (funcall subed-transform-for-cps (subed-subtitle-text))
+		             (subed-subtitle-text)))
+	       (length (length text))
+	       (cps (when (and (numberp msecs-stop)
+			                   (numberp msecs-start))
+		            (/ length 0.001 (- msecs-stop msecs-start)))))
+    (if (and print-message cps)
+	      (message "%.1f characters per second" cps)
+	    cps)))
 
 (defvar-local subed--cps-overlay nil)
 
 (defun subed--move-cps-overlay-to-current-subtitle ()
   "Move the CPS overlay to the current subtitle."
-  (let* ((begin (save-excursion
-		  (subed-jump-to-subtitle-time-start)
-		  (point)))
-	 (end (save-excursion
-		(goto-char begin)
-		(line-end-position))))
-    (if (overlayp subed--cps-overlay)
-	(move-overlay subed--cps-overlay begin end (current-buffer))
-      (setq subed--cps-overlay (make-overlay begin end)))
-    (subed--update-cps-overlay)))
+  (unless subed--batch-editing
+    (let* ((begin (save-excursion
+		                (subed-jump-to-subtitle-time-start)
+		                (point)))
+	         (end (save-excursion
+		              (goto-char begin)
+		              (line-end-position))))
+      (if subed--cps-overlay
+	        (move-overlay subed--cps-overlay begin end (current-buffer))
+        (setq subed--cps-overlay (make-overlay begin end)))
+      (subed--update-cps-overlay))))
 
 (defun subed--update-cps-overlay (&rest _rest)
-  "Update the CPS overlay.
-This accepts and ignores any number of arguments so that it can
-be run in `after-change-functions'."
-  (let ((cps (subed-calculate-cps)))
-    (when (numberp cps)
-      (overlay-put
-       subed--cps-overlay
-       'after-string
-       (propertize (format " %.1f CPS" cps) 'face 'shadow 'display '(height 0.9))))))
+  "Update the CPS overlay."
+  (when subed--cps-overlay
+    (let ((cps (subed-calculate-cps)))
+      (when cps
+        (overlay-put
+         subed--cps-overlay
+         'after-string
+         (propertize (format " %.1f CPS" cps) 'face 'shadow 'display '(height 0.9)))))))
+
+;;; Trimming overlaps
+
+(defun subed--identify-overlaps ()
+  "Return a list of IDs for subtitles that overlap the next one.
+This observes `subed-subtitle-spacing'."
+  (let (overlap-ids next-sub-start-time)
+    (save-excursion
+      (subed-for-each-subtitle (point-min) (point-max) t
+        (when (and next-sub-start-time
+                   (> (+ (subed-subtitle-msecs-stop)
+                         subed-subtitle-spacing)
+                      next-sub-start-time))
+          (push (subed-subtitle-id) overlap-ids))
+        (setq next-sub-start-time (subed-subtitle-msecs-start)))
+      overlap-ids)))
+
+;; NB: runs in a hook, so this version cannot send prefix arg to
+;; subed-trim-overlaps. Doesn't actually use the whole list of
+;; overlaps, so it may be more efficient to just find the first overlap.
+(defun subed-trim-overlap-check ()
+  "Test all subtitles for overlapping timecodes.
+
+Creates a list of the ids of overlapping subtitles, moves point
+to the end time of the first one, and prompts to trim
+them. Designed to be run in `subed-mode-hook'."
+  (interactive)
+  (let ((overlap-ids (subed--identify-overlaps)))
+    (when overlap-ids
+      (subed-jump-to-subtitle-time-stop (car overlap-ids))
+      (when (yes-or-no-p "Overlapping subtitles found. Trim them? ")
+        (subed-trim-overlaps)))))
+
+(defun subed-trim-overlaps (&optional msecs)
+  "Adjust all overlapping times in current file.
+
+Change the stop times to start MSECS before the next subtitle, or
+`subed-subtitle-spacing' if not specified.  If
+`subed-trim-overlap-use-start' is non-nil, change
+the start times instead."
+  (interactive "P")
+  (subed-batch-edit
+   (save-excursion
+     (subed-for-each-subtitle (point-min) (point-max) nil
+       (if subed-trim-overlap-use-start
+           (subed-trim-overlap-next-start msecs)
+         (subed-trim-overlap-stop msecs))))))
+
+(defun subed-trim-overlap-maybe-sanitize ()
+  "Trim overlaps if specified by `subed-trim-overlap-on-save'."
+  (when subed-trim-overlap-on-save
+    (subed-trim-overlaps)))
+
+(defun subed-trim-overlap-maybe-check ()
+  "Check overlaps if specified by `subed-trim-overlap-check-on-save'."
+  (when subed-trim-overlap-check-on-save
+    (subed-trim-overlap-check)))
+
+(defun subed-trim-overlap-stop (&optional msecs ignore-negative-duration)
+  "Trim the current subtitle so that it stops before the next one.
+
+Trim the end time of the current subtitle to MSECS or
+`subed-subtitle-spacing' less than the start time of the next
+subtitle.  Unless either IGNORE-NEGATIVE-DURATION or
+`subed-enforce-time-boundaries' are non-nil, adjust MSECS so that
+the stop time isn't smaller than the start time."
+  (interactive "P")
+  (let ((next-sub-start-time (save-excursion
+                               (and
+                                (subed-forward-subtitle-time-start)
+                                (subed-subtitle-msecs-start))))
+        (this-sub-stop-time (subed-subtitle-msecs-stop)))
+    (when (and next-sub-start-time this-sub-stop-time)
+      (subed-adjust-subtitle-time-stop
+       (min 0
+            (- (- next-sub-start-time
+                  (if (numberp msecs) msecs subed-subtitle-spacing))
+               this-sub-stop-time))
+       ignore-negative-duration
+       t))))
+
+(defun subed-trim-overlap-next-start (&optional msecs ignore-negative-duration)
+  "Trim the next subtitle so that it starts after the current one.
+
+Trim the start time of the next subtitle to MSECS or
+`subed-subtitle-spacing' greater than the end time of the current
+subtitle.  Unless either IGNORE-NEGATIVE-DURATION or
+`subed-enforce-time-boundaries' are non-nil, adjust MSECS so that
+the stop time isn't smaller than the start time."
+  (interactive "P")
+  (save-excursion
+    (let ((this-sub-stop-time (subed-subtitle-msecs-stop))
+          (next-sub-start-time (and
+                                (subed-forward-subtitle-time-start)
+                                (subed-subtitle-msecs-start))))
+      (when (and this-sub-stop-time
+                 next-sub-start-time
+                 (or msecs subed-subtitle-spacing))
+        (subed-adjust-subtitle-time-start
+         (max 0
+              (-
+               (+ this-sub-stop-time (or msecs subed-subtitle-spacing))
+               next-sub-start-time))
+         ignore-negative-duration
+         t)))))
+
+;;; Sorting and sanitizing
+
+(defun subed-prepare-to-save ()
+  "Sanitize and validate this buffer."
+  (interactive)
+  (atomic-change-group
+    (subed-sanitize)
+    (subed-validate)))
+
+(defun subed--sorted-p (&optional list)
+  "Return non-nil if LIST is sorted by start time.
+If LIST is nil, use the subtitles in the current buffer."
+  (let ((subtitles (or list (subed-subtitle-list)))
+        (sorted t))
+    (while (cdr subtitles)
+      (if (and
+           (numberp (elt (car subtitles) 1))
+           (numberp (elt (cadr subtitles) 1))
+           (> (elt (car subtitles) 1)
+              (elt (cadr subtitles) 1))) ; starts later than the next one
+          (setq sorted nil
+                subtitles nil)
+        (setq subtitles (cdr subtitles))))
+    sorted))
+
+(subed-define-generic-function sort ()
+  "Sort subtitles."
+  (interactive)
+  (subed-sanitize-format)
+  (subed-validate-format)
+  (unless (subed--sorted-p)
+    (subed-batch-edit
+      (atomic-change-group
+        (subed-save-excursion
+         (goto-char (point-min))
+         (unless (subed-jump-to-subtitle-id)
+           (subed-forward-subtitle-id))
+         (sort-subr nil
+                    ;; nextrecfun (move to next record/subtitle or to end-of-buffer
+                    ;; if there are no more records)
+                    (lambda () (unless (subed-forward-subtitle-id)
+                                 (goto-char (point-max))))
+                    ;; endrecfun (move to end of current record/subtitle)
+                    #'subed-jump-to-subtitle-end
+                    ;; startkeyfun (return sort value of current record/subtitle)
+                    #'subed-subtitle-msecs-start))
+        (subed-regenerate-ids)))))
+
+;;; Initialization
+
 
 (provide 'subed-common)
 ;;; subed-common.el ends here
